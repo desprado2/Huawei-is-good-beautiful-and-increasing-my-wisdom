@@ -64,6 +64,7 @@ inline vector <string> getline_split (FILE* f) {
 	if (fgets(tmp, BUFFER_SIZE, f) == NULL) return {};
 	size_t len = strlen(tmp);
 	while (len && tmp[len - 1] <= ' ') len--;
+	string fuck(tmp);
 	vector <string> ret;
 	for (size_t i = 0; i < len; ) {
 		size_t j = i;
@@ -103,6 +104,7 @@ void input_data () {
 		}
 		fclose (fdemand);
 	}
+	cerr << "read demand.csv finished\n";
 	{
 		FILE* fbandwidth = fopen (FILE_BANDWIDTH, "r");
 		auto header = getline_split(fbandwidth);
@@ -116,11 +118,13 @@ void input_data () {
 		}
 		fclose (fbandwidth);
 	}
+	cerr << "read bandwidth.csv finished\n";
 	{
 		FILE* fconfig = fopen (FILE_CONFIG, "r");
-		assert (fscanf(fconfig, "%*s qos_constraint=%d base_cost=%d", &q, &V) == 1);
+		assert (fscanf(fconfig, "%*s qos_constraint=%d base_cost=%d", &q, &V) == 2);
 		fclose (fconfig);
 	}
+	cerr << "read config.ini finished\n";
 	{
 		FILE* fqos = fopen (FILE_QOS, "r");
 		auto ids = getline_split(fqos);
@@ -167,8 +171,6 @@ struct FlowGraph{
 
 	FlowGraph(){
 		reset();
-		for (int s = 0; s < n; s++)
-			init_server_order.push_back(s);
 	}
 	void reset(){
 		memset(maxFlow, 0, sizeof(maxFlow));
@@ -202,7 +204,8 @@ struct FlowGraph{
 		for (auto [c, stream] : streams){
 			int streamFlow = demand[tick][c][stream];
 			int bestFit = -1;
-			for (int s = 0; s < n; s++){
+			for (int sID = 0; sID < n; sID++){
+				int s = server_order[sID];
 				if (qos[s][c] && remain_flow[s] >= streamFlow){
 					if (bestFit == -1 || remain_flow[bestFit] > remain_flow[s])
 						bestFit = s;
@@ -231,7 +234,7 @@ struct Solution {
         cerr << value << endl;
         freopen (FILE_OUTPUT, "w", stdout);
         for (int tick = 0; tick < t; tick ++) {
-            vector < customer_record > alloc[m];
+            /*vector < customer_record > alloc[m];
             for (int s = 0; s < n; s++) {
                 for (auto r : allocation[s][tick]) {
                     alloc[r.customer].push_back({s, r.stream, r.flow});
@@ -246,7 +249,26 @@ struct Solution {
                     printf("<%s,%s,%d>", sid[r.server].c_str(), stream_id[tick][r.stream].c_str(), r.flow);
                 }
                 putchar ('\n');
-            }
+            }*/
+			map<int, vector<int>> alloc[m]; // alloc[customer]: {server:{stream1, stream2, ...}, server:{...}}
+			for (int s = 0; s < n; s++){
+				for (auto r : allocation[s][tick]){
+					alloc[r.customer][s].push_back(r.stream);
+				}
+			}
+			for (int c = 0; c < m; c++){
+				printf("%s:", cid[c].c_str());
+				bool first = true;
+				for (auto & [server, streamVec] : alloc[c]){
+					if (first) first = false;
+					else putchar(',');
+					printf("<%s", sid[server].c_str());
+					for (auto stream : streamVec)
+						printf(",%s", stream_id[tick][stream].c_str());
+					putchar('>');
+				}
+				putchar('\n');
+			}
         }
         fclose(stdout);
     }
@@ -340,7 +362,6 @@ void dispatch_threads (void* (*func)(void*)) {
 
 int main() {
 	input_data();
-	cerr << "hello";
 
     init();
 
