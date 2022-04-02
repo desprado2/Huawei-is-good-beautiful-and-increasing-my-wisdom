@@ -11,7 +11,7 @@ auto clock_start = cur_time();
 const int FIRST_STAGE_TIME_LIMIT = 10;
 const int HARD_TIME_LIMIT = 40;
 #else
-const int FIRST_STAGE_TIME_LIMIT = 280;
+const int FIRST_STAGE_TIME_LIMIT = 200;
 const int HARD_TIME_LIMIT = 296;
 #define cerr 0 && cerr
 #undef assert
@@ -165,57 +165,73 @@ struct server_record {
 };
 vector<int> init_server_order;
 struct FlowGraph{
-	int maxFlow[N];
+	int remain_bw[N];
 	vector<server_record> rec[N];
+
+	struct StreamRecord{
+		int customer;
+		int stream;
+	};
+	vector<StreamRecord> remain_streams;
 
 	FlowGraph(){
 		reset();
 	}
 	void reset(){
-		memset(maxFlow, 0, sizeof(maxFlow));
+		fill(remain_bw, remain_bw + n, 0);
 		for (int s = 0; s < n; s++)
 			rec[s].clear();
+		remain_streams.clear();
 	}
 
-	void set_max_flow(int server, int flow){
-		maxFlow[server] = flow;
-	}
-
-	bool binPacking_bestFit(int tick, const vector<int>& server_order = init_server_order){
-		int remain_flow[N];
-		for (int s = 0; s < n; s++)
-			remain_flow[s] = maxFlow[s];
-		
-		vector<pair<int, int>> streams; // first: customer id; second: stream id
+	/*
+	O(NS log(NS))
+	*/
+	void init_streams(int tick){
 		for (int c = 0; c < m; c++){
 			int stream_num = (int)stream_id[tick].size();
 			for (int stream = 0; stream < stream_num; stream++) if (demand[tick][c][stream]){
-				streams.push_back({c, stream});
+				remain_streams.push_back({c, stream});
 			}
 		}
 
-		sort(streams.begin(), streams.end(), [&](auto x, auto y){
-			int D = demand[tick][x.first][x.second] - demand[tick][y.first][y.second];
-			if (D) return D > 0;
-			return x > y; // ***this order can be changed***
+		sort(remain_streams.begin(), remain_streams.end(), [&](auto x, auto y){
+			int D = demand[tick][x.customer][x.stream] - demand[tick][y.customer][y.stream];
+			if (D) return D < 0;
+			return make_pair(x.customer, x.stream) < make_pair(y.customer, y.stream); // this order can be changed
 		});
+	}
 
-		for (auto [c, stream] : streams){
+	void add_bw(int server, int flow){
+		remain_bw[server] += flow;
+	}
+
+	/*
+	O(NMS)
+	*/
+	bool binPacking_bestFit(int tick, const vector<int>& server_order = init_server_order){
+		/*
+		目前是发现一个无法塞进箱子就立即退出
+		实际上可以整个轮询一遍再退出，但是这样的话要remain_streams要改为list
+		*/
+		while (!remain_streams.empty()){
+			auto [c, stream] = remain_streams.back();
 			int streamFlow = demand[tick][c][stream];
 			int bestFit = -1;
 			for (int sID = 0; sID < n; sID++){
 				int s = server_order[sID];
-				if (qos[s][c] && remain_flow[s] >= streamFlow){
-					if (bestFit == -1 || remain_flow[bestFit] > remain_flow[s])
+				if (qos[s][c] && remain_bw[s] >= streamFlow){
+					if (bestFit == -1 || remain_bw[bestFit] > remain_bw[s])
 						bestFit = s;
 				}
 			}
 			if (bestFit == -1) return false;
-			remain_flow[bestFit] -= streamFlow;
 
+			remain_bw[bestFit] -= streamFlow;
 			rec[bestFit].push_back({c, stream, streamFlow});
-		}
 
+			remain_streams.pop_back();
+		}
 		return true;
 	}
 };
@@ -289,7 +305,6 @@ struct Solver {
 		high_server.clear();
 		for (int burst_time = 0; burst_time <= t / 20; burst_time++)
 			burst_pool[burst_time].clear();
-		//cerr << "server_order: ";for (auto s : server_order) cerr << s << ' ';cerr << endl;
 
 		for (int sID = 0; sID < highServer_number; sID++){
 			high_server.push_back(server_order[sID]);
@@ -320,6 +335,9 @@ struct Solver {
 		}
 	}
 
+	/*
+	O((T + TN/20) * NMS)
+	*/
 	bool check(int midFlow){
         vector<int> pool[t / 20 + 1];
         for (int burst_time = 1; burst_time <= t / 20; burst_time++)
@@ -337,13 +355,18 @@ struct Solver {
 			memset (current_flow, 0, sizeof(current_flow));
 
 			G[tick].reset();
+			G[tick].init_streams(tick);
 			for (int s = 0; s < n; s++){
 				current_flow[s] = min(bandwidth[s], int(server_flow95_distribution[s] * midFlow));
-				G[tick].set_max_flow(s, current_flow[s]);
+				G[tick].add_bw(s, current_flow[s]);
 			}
 
 			bool flag = G[tick].binPacking_bestFit(tick, server_order);
 			while (!flag){
+				/*
+				The strategy of finding the new burstID can be changed
+				For example, think of which servers can connect G[tick].remain_streams.back().customer
+				*/
 				int burstID = -1;
 				for (int burst_time = t / 20; burst_time; burst_time--){
 					for (int i = 0; i < (int)pool[burst_time].size(); i++){
@@ -364,11 +387,8 @@ struct Solver {
 
 				if (burstID == -1) return false;
 
-				G[tick].reset();
-				for (int s = 0; s < n; s++){
-					if (bursted[s]) G[tick].set_max_flow(s, bandwidth[s]);
-					else G[tick].set_max_flow(s, current_flow[s]);
-				}
+				int bw_increase = bandwidth[burstID] - current_flow[burstID];
+				G[tick].add_bw(burstID, bw_increase);
 				flag = G[tick].binPacking_bestFit(tick, server_order);
 			}
 		}
@@ -407,7 +427,7 @@ struct Solver {
 		rng.seed(114514 + pass);
 		Solver_init();
 		
-		int BATCHNUM = 114514;
+		int BATCHNUM = 1;
 		for (int K = 0; K < BATCHNUM; K++){
 			/*
 			TODO: set server_order here.
