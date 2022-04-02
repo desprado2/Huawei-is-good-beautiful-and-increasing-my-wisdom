@@ -411,6 +411,7 @@ struct Solver {
 
 			sort(flows.begin(), flows.end());
 			sol.flow95[s] = flows[cnt95 - 1];
+			cerr << "flow95[" << s << "] = " << sol.flow95[s] << "; maxFlow[" << s << "] = " << flows.back() << endl;
 
 			if (flows.back() > 0){
 				if (sol.flow95[s] <= V) sum += V;
