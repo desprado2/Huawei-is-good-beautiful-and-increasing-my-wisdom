@@ -11,12 +11,11 @@ auto clock_start = cur_time();
 const int FIRST_STAGE_TIME_LIMIT = 10;
 const int HARD_TIME_LIMIT = 40;
 #else
-const int FIRST_STAGE_TIME_LIMIT = 80;
+const int FIRST_STAGE_TIME_LIMIT = 280;
 const int HARD_TIME_LIMIT = 296;
-/*
 #define cerr 0 && cerr
 #undef assert
-#define assert(expr) (expr)*/
+#define assert(expr) (expr)
 #endif
 
 inline bool time_limit_ok(int time_limit = HARD_TIME_LIMIT) {
@@ -234,22 +233,6 @@ struct Solution {
         cerr << value << endl;
         freopen (FILE_OUTPUT, "w", stdout);
         for (int tick = 0; tick < t; tick ++) {
-            /*vector < customer_record > alloc[m];
-            for (int s = 0; s < n; s++) {
-                for (auto r : allocation[s][tick]) {
-                    alloc[r.customer].push_back({s, r.stream, r.flow});
-                }
-            }
-            for (int c = 0; c < m; c++) {
-                printf("%s:", cid[c].c_str());
-                bool first = true;
-                for (auto &r : alloc[c]) {
-                    if (first) first = false;
-                    else putchar (',');
-                    printf("<%s,%s,%d>", sid[r.server].c_str(), stream_id[tick][r.stream].c_str(), r.flow);
-                }
-                putchar ('\n');
-            }*/
 			map<int, vector<int>> alloc[m]; // alloc[customer]: {server:{stream1, stream2, ...}, server:{...}}
 			for (int s = 0; s < n; s++){
 				for (auto r : allocation[s][tick]){
@@ -288,7 +271,109 @@ struct Solver {
 
 	FlowGraph G[TS];
 
-    Solution ans;
+	vector<int> server_order;
+
+	void Solver_init(){
+		server_order = init_server_order;
+	}
+	/*
+	TODO: set server order
+	*/
+	void set_server_order(){
+	}
+
+	vector<int> high_server;
+	vector<int> burst_pool[TS / 20 + 5];
+	vector<int> sorted_moments;
+	void init_classification(int highServer_number){
+		high_server.clear();
+		for (int burst_time = 0; burst_time <= t / 20; burst_time++)
+			burst_pool[burst_time].clear();
+		//cerr << "server_order: ";for (auto s : server_order) cerr << s << ' ';cerr << endl;
+
+		for (int sID = 0; sID < highServer_number; sID++){
+			high_server.push_back(server_order[sID]);
+			burst_pool[t / 20].push_back(server_order[sID]);
+		}
+		for (int burst_time = t / 20; burst_time; burst_time--)
+			shuffle(burst_pool[burst_time].begin(), burst_pool[burst_time].end(), rng);
+
+		sorted_moments.clear();
+		for (int tick = 0; tick < t; tick++)
+			sorted_moments.push_back(tick);
+		sort(sorted_moments.begin(), sorted_moments.end(), [](int x, int y){
+			if (total_demand[x] != total_demand[y]) return total_demand[x] > total_demand[y];
+			return stream_id[x].size() > stream_id[y].size();
+		});
+	}
+
+	double server_flow95_distribution[N];
+	/*
+	It can be set in other ways, such as simulated annealing.
+	*/
+	void set_distribution(){
+		for (int s = 0; s < n; s++)
+			server_flow95_distribution[s] = 0;
+		
+		for (auto s : high_server){
+			server_flow95_distribution[s] = 1.0;
+		}
+	}
+
+	bool check(int midFlow){
+        vector<int> pool[t / 20 + 1];
+        for (int burst_time = 1; burst_time <= t / 20; burst_time++)
+            pool[burst_time] = burst_pool[burst_time];
+
+		int remain_burst[n];
+		memset(remain_burst, 0, sizeof(remain_burst));
+		for (auto s : high_server)
+			remain_burst[s] = t / 20;
+		
+		for (auto tick : sorted_moments){
+			bool bursted[n];
+            int current_flow[n];
+            memset (bursted, 0, sizeof(bursted));
+			memset (current_flow, 0, sizeof(current_flow));
+
+			G[tick].reset();
+			for (int s = 0; s < n; s++){
+				current_flow[s] = min(bandwidth[s], int(server_flow95_distribution[s] * midFlow));
+				G[tick].set_max_flow(s, current_flow[s]);
+			}
+
+			bool flag = G[tick].binPacking_bestFit(tick, server_order);
+			while (!flag){
+				int burstID = -1;
+				for (int burst_time = t / 20; burst_time; burst_time--){
+					for (int i = 0; i < (int)pool[burst_time].size(); i++){
+						int s = pool[burst_time][i];
+						if (!bursted[s]){
+							burstID = s;
+							bursted[s] = true;
+							remain_burst[s]--;
+
+							pool[burst_time].erase(pool[burst_time].begin() + i);
+							pool[burst_time - 1].push_back(s);
+							
+							break;
+						}
+					}
+					if (burstID >= 0) break;
+				}
+
+				if (burstID == -1) return false;
+
+				G[tick].reset();
+				for (int s = 0; s < n; s++){
+					if (bursted[s]) G[tick].set_max_flow(s, bandwidth[s]);
+					else G[tick].set_max_flow(s, current_flow[s]);
+				}
+				flag = G[tick].binPacking_bestFit(tick, server_order);
+			}
+		}
+		return true;
+	}
 
 	Solution getSolution(){
 		Solution sol;
@@ -314,19 +399,52 @@ struct Solver {
 		}
 
 		sol.value = int(sum + 0.5);
-		
 		return sol;
 	}
 
+	Solution ans;
     void main(int pass) {
-		for (int tick = 0; tick < t; tick++){
-			for (int s = 0; s < n; s++){
-				G[tick].set_max_flow(s, bandwidth[s]);
-			}
-			G[tick].binPacking_bestFit(tick);
-		}
+		rng.seed(114514 + pass);
+		Solver_init();
+		
+		int BATCHNUM = 114514;
+		for (int K = 0; K < BATCHNUM; K++){
+			/*
+			TODO: set server_order here.
+			Default order is order(i) = i.
+			*/
+			set_server_order();
 
-		ans = getSolution();
+			/*
+			TODO: number of high servers can be changed in each round.
+			*/
+			init_classification(n);
+
+			/*
+			TODO: set all servers' flow95 distribution.
+			Default distribution is ratio(s) = [s \in high_server].
+			*/
+			set_distribution();
+
+			int L = 0, R = 0, last = -1;
+			for (int s = 0; s < n; s++)
+				R = max(R, (int)((double)bandwidth[s] / server_flow95_distribution[s] + 0.5));
+			while (L < R){
+				cerr << "L = " << L << " R = " << R << endl;
+				int mid = (L + R) / 2;
+				if (check(last = mid)) R = mid;
+				else L = mid + 1;
+
+				if (!time_limit_ok(FIRST_STAGE_TIME_LIMIT)) {cerr << "TLE\n"; break;}
+			}
+			if (last != R) check(R);
+			cerr << "pass " << pass << " round " << K << " : R = " << R << endl;
+			
+			Solution cur = getSolution();
+			if (ans.value > cur.value) ans = std::move(cur);
+
+			if (!time_limit_ok(FIRST_STAGE_TIME_LIMIT)) break;
+		}
     }
 };
 
@@ -339,7 +457,12 @@ void set_affinity (int core) {
 	assert(!pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask));
 }
 
+#ifdef LOCAL
+const int NThread = 1;
+#else
 const int NThread = 4;
+#endif
+
 Solver worker[NThread];
 
 void *call_worker_main(void *arg) {
