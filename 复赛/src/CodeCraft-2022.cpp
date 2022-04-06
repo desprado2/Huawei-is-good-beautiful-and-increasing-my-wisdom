@@ -14,7 +14,7 @@ const int FIRST_STAGE_TIME_LIMIT = 20;
 const int HARD_TIME_LIMIT = 40;
 #else
 const int BINARY_SERACH_TIME_LIMIT = 80;
-const int FIRST_STAGE_TIME_LIMIT = 250;
+const int FIRST_STAGE_TIME_LIMIT = 210;
 const int HARD_TIME_LIMIT = 296;
 #define cerr 0 && cerr
 #undef assert
@@ -322,7 +322,7 @@ struct Solution {
 	}
 
     void output() {
-        cerr << value << endl;
+        cerr << "value = " << value << endl;
         freopen (FILE_OUTPUT, "w", stdout);
         for (int tick = 0; tick < t; tick ++) {
 			map<int, vector<int>> alloc[m]; // alloc[customer]: {server:{stream1, stream2, ...}, server:{...}}
@@ -365,7 +365,7 @@ struct FlowSeries{
 			high_flows.erase(high_flows.find(oldVal));
 			high_flows.insert(newVal);
 		}
-		if (*low_flows.rbegin() > *high_flows.begin()){
+		if (!high_flows.empty() && *low_flows.rbegin() > *high_flows.begin()){
 			int val1 = *low_flows.rbegin(), val2 = *high_flows.begin();
 			low_flows.erase(--low_flows.end()), high_flows.erase(high_flows.begin());
 			low_flows.insert(val2), high_flows.insert(val1);
@@ -384,8 +384,15 @@ Solution get_solution(const FlowSolution& flow_sol){
 	for (int s = 0; s < n; s++)
 		ret.allocation[s].resize(t);
 
-	bool stream_allocated[t][m][S] = {0};
-	int server_flow[t][n] = {0};
+	vector< vector<bool> > stream_allocated[t]; // stream_allocated[tick][c][stream] : bool
+	vector<int> server_flow[t]; // server_flow[tick][s] : int
+	for (int tick = 0; tick < t; tick++)
+		server_flow[tick].resize(n, 0);
+	for (int tick = 0; tick < t; tick++){
+		stream_allocated[tick].resize(m);
+		for (int c = 0; c < m; c++)
+			stream_allocated[tick][c].resize(stream_id[tick].size(), false);
+	}
 	
 	// first round, best fit
 	const double CAPACITY_RATIO = 1.0;
@@ -474,9 +481,10 @@ Solution get_solution(const FlowSolution& flow_sol){
 			flow_series[s].modify(server_flow[tick][s] + F, server_flow[tick][s]);
 		}
 		
-		assert(best_s != -1);
+		if (best_s == -1) while(1); // TLE
+
 		stream_allocated[tick][c][stream] = true;
-		ret.allocation[best_s][tick].push_back({c, best_s, F});
+		ret.allocation[best_s][tick].push_back({c, stream, F});
 		flow_series[best_s].modify(server_flow[tick][best_s], server_flow[tick][best_s] + F);
 		server_flow[tick][best_s] += F;
 	}
@@ -846,7 +854,7 @@ struct Solver {
         };
         count_bursts();
         for (auto rs : order) if (cur.flow95[rs] > low_refund) {
-            memset(extra_burst, 0, sizeof extra_burst);
+            memset(extra_burst, 0, sizeof(extra_burst));
             for (int i = 0; i < n; i++) {
                 error[i] = min(bandwidth[i], cur.flow95[i] + int(rng() % random_range)) - cur.flow95[i];
             }
@@ -930,8 +938,8 @@ struct Solver {
         return cur;
     }
 
-    inline FlowSolution finetune (const FlowSolution& ans) {
-        return finetune_with_error (ans, HARD_TIME_LIMIT, 1, 0);
+    inline FlowSolution finetune (const FlowSolution& ans, int time_limit = HARD_TIME_LIMIT) {
+        return finetune_with_error (ans, time_limit, 1, 0);
     }
 
     FlowSolution disperse (const FlowSolution& ans, int time_limit = HARD_TIME_LIMIT) {
@@ -1008,7 +1016,7 @@ struct Solver {
 		do{
         	shuffle(server_indices.begin(), server_indices.end(), rng);
 			cerr << "value = " << sol.value << ", finetune.\n";
-         	sol = finetune(finetune_with_error(sol, FIRST_STAGE_TIME_LIMIT));
+         	sol = finetune(finetune_with_error(sol, FIRST_STAGE_TIME_LIMIT), FIRST_STAGE_TIME_LIMIT);
         	sol = disperse(sol, FIRST_STAGE_TIME_LIMIT);
 			cerr << "after finetune, value = " << sol.value << endl;
 		} while (time_limit_ok(FIRST_STAGE_TIME_LIMIT));
@@ -1021,7 +1029,7 @@ struct Solver {
 		
 		FlowSolution flow_ans;
 		
-		int BATCHNUM = 1;
+		int BATCHNUM = 1000;
 		for (int K = 0; K < BATCHNUM; K++){
 			/*
 			TODO: set server_order here.
@@ -1089,7 +1097,7 @@ void set_affinity (int core) {
 #ifdef LOCAL
 const int NThread = 1;
 #else
-const int NThread = 4;
+const int NThread = 2;
 #endif
 
 Solver worker[NThread];
@@ -1121,4 +1129,3 @@ int main() {
 
     global_ans.output();
 }
-
