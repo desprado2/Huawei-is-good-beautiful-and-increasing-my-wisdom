@@ -14,7 +14,7 @@ const int FIRST_STAGE_TIME_LIMIT = 35;
 const int HARD_TIME_LIMIT = 40;
 #else
 const int BINARY_SERACH_TIME_LIMIT = 80;
-const int FIRST_STAGE_TIME_LIMIT = 270;
+const int FIRST_STAGE_TIME_LIMIT = 285;
 const int HARD_TIME_LIMIT = 296;
 #define cerr 0 && cerr
 #undef assert
@@ -512,7 +512,7 @@ struct Solver {
 			Thread 1: All the servers have possitive flow95, regardless it is HIGH or LOW.
 			Finetune the flow solution in step 4.
 			*/
-			flow_in(1.0);
+			flow_in(1);
 
 			for (int tick = 0; tick < t; tick++){
 				burst_server[tick].clear();
@@ -929,6 +929,7 @@ struct Solver {
         sort(order.begin(), order.end(), [&] (auto u, auto v) {
             return ans.flow95[u] < ans.flow95[v];
         });
+
         int error[n];
         memset(error, 0, sizeof(error));
         for (int iu = 0; iu < n; iu++) {
@@ -937,7 +938,18 @@ struct Solver {
                 int w = order[iw];
                 if (cur.flow95[w] > 0) {
                     if (!time_limit_ok(time_limit)) break;
-                    int vv = min(bandwidth[u] - cur.flow95[u], cur.flow95[w]);
+
+					int max_allowed_reduce = cur.flow95[w];
+					for (int tick = 0; tick < t; tick++){
+						int flow = 0;
+						for (auto r : cur.allocation[w][tick])
+							flow += r.flow;
+						flow += occupied_bandwidth[tick][w];
+						if (flow <= cur.flow95[w])
+							max_allowed_reduce = min(max_allowed_reduce, cur.flow95[w] - occupied_bandwidth[tick][w]);
+					}
+
+                    int vv = min(bandwidth[u] - cur.flow95[u], max_allowed_reduce);
                     error[u] = +vv;
                     error[w] = -vv;
                     bool ok = true;
@@ -981,8 +993,8 @@ struct Solver {
                     if (ok) {
                         for (auto tick : last_to_check) G[tick].dinic();
                         auto nxt = get_flow_solution();
-                        assert (nxt.value <= cur.value);
-                        cur = std::move(nxt);
+                        if (nxt.value <= cur.value);
+                        	cur = std::move(nxt);
                     }
                     error[u] = 0;
                     error[w] = 0;
