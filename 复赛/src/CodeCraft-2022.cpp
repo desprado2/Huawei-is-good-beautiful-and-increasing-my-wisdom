@@ -372,6 +372,7 @@ struct FlowSeries{
 		}
 	}
 };
+
 struct StreamRecord{
 	int tick, c, stream;
 	bool operator < (const StreamRecord& other)const{
@@ -379,119 +380,7 @@ struct StreamRecord{
 	}
 };
 
-Solution get_solution(const FlowSolution& flow_sol){
-	Solution ret;
-	for (int s = 0; s < n; s++)
-		ret.allocation[s].resize(t);
 
-	vector< vector<bool> > stream_allocated[t]; // stream_allocated[tick][c][stream] : bool
-	vector<int> server_flow[t]; // server_flow[tick][s] : int
-	for (int tick = 0; tick < t; tick++)
-		server_flow[tick].resize(n, 0);
-	for (int tick = 0; tick < t; tick++){
-		stream_allocated[tick].resize(m);
-		for (int c = 0; c < m; c++)
-			stream_allocated[tick][c].resize(stream_id[tick].size(), false);
-	}
-	
-	// first round, best fit
-	const double CAPACITY_RATIO = 1.0;
-	for (int tick = 0; tick < t; tick++){
-		// parse the flow_sol
-		vector<pair<int, int>> bins[m]; // first: capacity, second: server index
-		for (int s = 0; s < n; s++){
-			for (auto r : flow_sol.allocation[s][tick])
-				bins[r.c].push_back({int(r.flow * CAPACITY_RATIO), s});
-		}
-
-		// bin packing
-		int stream_num = stream_id[tick].size();
-		for (int c = 0; c < m; c++){
-			vector<StreamRecord> streams;
-			for (int stream = 0; stream < stream_num; stream++)
-				if (demand[tick][c][stream])
-					streams.push_back({tick, c, stream});
-			sort(streams.begin(), streams.end());
-
-			set<pair<int, int>> remain_capacity; // first: remain capacity, second: server index
-			for (auto [capa, s] : bins[c])
-				remain_capacity.insert({min(capa, bandwidth[s] - server_flow[tick][s]), s});
-
-			for (auto [tick, c, stream] : streams){
-				int F = demand[tick][c][stream];
-				auto it = remain_capacity.lower_bound({F, -1});
-				if (it == remain_capacity.end()) continue;
-
-				int capa = it->first, s = it->second;
-				server_flow[tick][s] += F;
-				stream_allocated[tick][c][stream] = true;
-				ret.allocation[s][tick].push_back({c, stream, F});
-
-				remain_capacity.erase(it);
-				remain_capacity.insert({capa - F, s});
-			}
-		}
-	}
-	cerr << "first round finished.\n";
-
-	// before second round, record current server_flow and fucked streams.
-	FlowSeries flow_series[n];
-	for (int s = 0; s < n; s++){
-		vector<int> flows(t);
-		for (int tick = 0; tick < t; tick++)
-			flows[tick] = server_flow[tick][s];
-		sort(flows.begin(), flows.end());
-		
-		flow_series[s].clear();
-		for (int tick = 0; tick < cnt95; tick++)
-			flow_series[s].low_flows.insert(flows[tick]);
-		for (int tick = cnt95; tick < t; tick++)
-			flow_series[s].high_flows.insert(flows[tick]);
-	}
-
-	vector<StreamRecord> remain_streams;
-	for (int tick = 0; tick < t; tick++)
-		for (int c = 0; c < m; c++)
-			for (int stream = 0; stream < stream_id[tick].size(); stream++)
-				if (demand[tick][c][stream] && !stream_allocated[tick][c][stream])
-					remain_streams.push_back({tick, c, stream});
-	sort(remain_streams.begin(), remain_streams.end(), [&](auto x, auto y){
-		return demand[x.tick][x.c][x.stream] < demand[y.tick][y.c][y.stream];
-	});
-
-	/* second round. if a stream is fucked because it's too large
-	find a server whose cost will increase the least when allocate the stream to it. */
-	for (auto [tick, c, stream] : remain_streams){
-		int F = demand[tick][c][stream];
-		int best_s = -1;
-		double min_cost_increase = 1e10;
-		for (int s = 0; s < n; s++) if (qos[s][c]){
-			if (bandwidth[s] - server_flow[tick][s] < F) continue;
-			
-			int old_flow95 = flow_series[s].get_flow95();
-			flow_series[s].modify(server_flow[tick][s], server_flow[tick][s] + F);
-			int new_flow95 = flow_series[s].get_flow95();
-			double old_cost = sqr((double)(old_flow95 - V)) / bandwidth[s];
-			double new_cost = sqr((double)(new_flow95 - V)) / bandwidth[s];
-			if (new_cost - old_cost < min_cost_increase){
-				min_cost_increase = new_cost - old_cost;
-				best_s = s;
-			}
-
-			flow_series[s].modify(server_flow[tick][s] + F, server_flow[tick][s]);
-		}
-		
-		if (best_s == -1) while(1); // TLE
-
-		stream_allocated[tick][c][stream] = true;
-		ret.allocation[best_s][tick].push_back({c, stream, F});
-		flow_series[best_s].modify(server_flow[tick][best_s], server_flow[tick][best_s] + F);
-		server_flow[tick][best_s] += F;
-	}
-
-	ret.calc();
-	return ret;
-}
 
 Solution global_ans;
 pthread_mutex_t global_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -501,12 +390,25 @@ struct Solver {
 
 	FlowGraph G[TS], Gbase;
 
-	/*
-	set Gbase
-	*/
-	void Solver_init(){
-		Gbase.reset(n + m + 2, 1, n + m + 2);
+	vector< vector<int> > stream_allocated[TS]; // stream_allocated[tick][c][stream] : int
+	vector<int> occupied_bandwidth[TS]; // occupied_bandwidth[tick][s] : int
+	vector<int> assigned_flow[TS]; // assigned_flow[tick][c] : int
+	vector<bool> server_bursted[TS]; // server_bursted[tick][s] : bool
+	int tot_assigned_flow[TS];
+	void Solver_init(int pass){
+		rng.seed(114514 + pass);
+		for (int tick = 0; tick < t; tick++){
+			stream_allocated[tick].resize(m);
+			for (int c = 0; c < m; c++)
+				stream_allocated[tick][c].resize(stream_id[tick].size(), -1);
+			
+			occupied_bandwidth[tick].resize(n, 0);
+			assigned_flow[tick].resize(m, 0);
+			server_bursted[tick].resize(n, false);
+			tot_assigned_flow[tick] = 0;
+		}
 
+		Gbase.reset(n + m + 2, 1, n + m + 2);
 		for (int s = 0; s < n; s++)
 			for (int c = 0; c < m; c++) {
 				if (qos[s][c])
@@ -557,19 +459,25 @@ struct Solver {
     vector <int> sortedMoments;
     int bursted_value[TS];
 	/*
-	set sortedMoments, and burstpool
+	flow_in() and parse the result, set the servers' type.
+	The stratagy is according to the pass.
 	*/
 	void init_classification(int pass){
 		memset(bursted_value, 0, sizeof(bursted_value));
 
 		if (pass == 0){
+			/*
+			Thread 0: set a estimate ratio for flow_in(), so that we can set how many servers are HIGH and the others are LOW
+			Only HIGH servers' have possitive flow95, LOW servers' flow95 are all zero.
+			Finetune the flow solution in step 4.
+			*/
 			flow_in(0.785);
 
 			for (int tick = 0; tick < t; tick++){
 				burst_server[tick].clear();
 				high_server[tick].clear();
 				for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt){
-					int s = G[tick].e[o].v - m - 2;
+					int s = G[tick].e[o].v - flow_s;
 					int flow = G[tick].e[o ^ 1].f;
 					server[s].flow[tick] = {flow, tick};
 				}
@@ -580,7 +488,7 @@ struct Solver {
 
 				sort(si.flow, si.flow + t, [&] (auto x, auto y) {
 					if (x.first != y.first) return x.first < y.first;
-					return total_demand[x.second] - bursted_value[x.second] < total_demand[y.second] - bursted_value[y.second];
+					return total_demand[x.second] < total_demand[y.second];
 				});
 				si.unassigned_burst = 0;
 				if (si.flow[cnt95 - 1].first > 0){
@@ -590,7 +498,7 @@ struct Solver {
 					}
 					for (int tick = cnt95; tick < t; tick++) {
 						burst_server[si.flow[tick].second].push_back(s);
-						bursted_value[si.flow[tick].second] += si.flow[tick].first;
+						bursted_value[si.flow[tick].second] += int(bandwidth[s] * 0.3);
 					}
 				}
 				else {
@@ -600,6 +508,10 @@ struct Solver {
 			}
 		}
 		else if (pass == 1){
+			/*
+			Thread 1: All the servers have possitive flow95, regardless it is HIGH or LOW.
+			Finetune the flow solution in step 4.
+			*/
 			flow_in(1.0);
 
 			for (int tick = 0; tick < t; tick++){
@@ -617,11 +529,11 @@ struct Solver {
 
 				sort(si.flow, si.flow + t, [&] (auto x, auto y) {
 					if (x.first != y.first) return x.first < y.first;
-					return total_demand[x.second] - bursted_value[x.second] < total_demand[y.second] - bursted_value[y.second];
+					return total_demand[x.second] < total_demand[y.second];
 				});
 				si.unassigned_burst = 0;
 				if (si.flow[cnt95 - 1].first > 0){
-					si.type = 1;
+					si.type = 1; // HIGH
 					for (int tick = 0; tick < cnt95; tick++){
 						high_server[si.flow[tick].second].push_back(s);
 					}
@@ -630,18 +542,17 @@ struct Solver {
 						//high_server[si.flow[tick].second].push_back(s);
 						//totalCost[si.flow[tick].second] += si.flow[tick].first;
 						burst_server[si.flow[tick].second].push_back(s);
-						bursted_value[si.flow[tick].second] += int(bandwidth[s] * 0.15);
+						bursted_value[si.flow[tick].second] += int(bandwidth[s] * 0.3);
 					}
 				}
 				else {
-					si.type = 2;
+					si.type = 2; // LOW
 					for (int tick = 0; tick < t; tick++)
 						high_server[tick].push_back(s);
 					si.unassigned_burst = cnt5;
 				}
 			}			
 		}
-
 
         sortedMoments.resize(t);
         for (int tick = 0; tick < t; tick++)
@@ -659,7 +570,65 @@ struct Solver {
         }
 	}
 
+	/*
+	Reset high_server, burst_server, ServerInformation::unassigned_burst
+	Recalculate the bursted_value, and sort the moments again according to the new result.
+	*/
+	void reclassify(int pass){
+		for (int tick = 0; tick < t; tick++){
+			high_server[tick].clear(), burst_server[tick].clear();
+			bursted_value[tick] = 0;
+		}
+
+		if (pass == 0){
+			for (int s = 0; s < n; s++)
+				server[s].unassigned_burst = cnt5;
+			for (int tick = 0; tick < t; tick++){
+				for (int s = 0; s < n; s++){
+					if (server_bursted[tick][s]){
+						burst_server[tick].push_back(s);
+						server[s].unassigned_burst--;
+						bursted_value[tick] += occupied_bandwidth[tick][s] + int((bandwidth[s] - occupied_bandwidth[tick][s]) * 0.5);
+					}
+					else{
+						if (server[s].type == 1) // only consider HIGH server.
+							high_server[tick].push_back(s);
+					}
+				}
+			}
+		}
+		else if (pass == 1){
+			for (int s = 0; s < n; s++)
+				server[s].unassigned_burst = cnt5;
+			for (int tick = 0; tick < t; tick++){
+				for (int s = 0; s < n; s++){
+					if (server_bursted[tick][s]){
+						burst_server[tick].push_back(s);
+						server[s].unassigned_burst--;
+						bursted_value[tick] += occupied_bandwidth[tick][s] + int((bandwidth[s] - occupied_bandwidth[tick][s]) * 0.5);
+					}
+					else{
+						high_server[tick].push_back(s);
+					}
+				}
+			}
+		}
+
+		sortedMoments.resize(t);
+        for (int tick = 0; tick < t; tick++)
+            sortedMoments[tick] = tick;
+        sort(sortedMoments.begin(), sortedMoments.end(), [&](int x, int y){
+            return total_demand[x] - bursted_value[x] > total_demand[y] - bursted_value[y];
+        });
+
+        for (int b = 0; b <= t / 20; b++) burst_pool[b].clear();
+        for (int s = 0; s < n; s++)
+            burst_pool[server[s].unassigned_burst].push_back(s);
+	}
+
 	double server_flow95_distribution[N];
+	int MID_FLOW;
+	double LARGE_STREAM_RATIO;
 	/*
 	Set high servers' ratio
 	It can be set in other ways, such as simulated annealing.
@@ -679,7 +648,7 @@ struct Solver {
 	void init_graph(int tick){
         G[tick] = Gbase;
         for (int c = 0; c < m; c++)
-            G[tick].add(c + flow_c, G[tick].T, customer_demand[tick][c]);
+            G[tick].add(c + flow_c, G[tick].T, customer_demand[tick][c] - assigned_flow[tick][c]);
     }
 	/*
 	*/
@@ -698,12 +667,12 @@ struct Solver {
             init_graph(tick);
 
             bool bursted[n];
-            int current_flow [n];
+            int current_flow[n];
             memset (bursted, 0, sizeof(bursted));
             memset (current_flow, -1, sizeof(current_flow));
 
             for (int s : burst_server[tick]){
-                current_flow[s] = bandwidth[s];
+                current_flow[s] = bandwidth[s] - occupied_bandwidth[tick][s];
                 bursted[s] = true;
                 G[tick].add(G[tick].S, s + flow_s, current_flow[s]);
             }
@@ -711,18 +680,17 @@ struct Solver {
             int ans = G[tick].dinic();
 
             for (int s : high_server[tick]){
-                current_flow[s] = min(int(midFlow * server_flow95_distribution[s]), bandwidth[s]);
+                current_flow[s] = min(int(midFlow * server_flow95_distribution[s]), bandwidth[s] - occupied_bandwidth[tick][s]);
                 G[tick].add(G[tick].S, s + flow_s, current_flow[s]);
             }
             ans += G[tick].dinic();
-			//cerr << "current graph:\n";
-			//G[tick].print_graph();
-			//cerr << "ans = " << ans << " total demand = " << total_demand[tick];
 
+			for (int s = 0; s < n; s++) if (current_flow[s] == -1){
+				current_flow[s] = 0;
+				G[tick].add(G[tick].S, s + flow_s, current_flow[s]);
+			}
 
-            // XXX: low servers (empty edges) are omitted for speeding up
-
-            while (ans < total_demand[tick]){
+            while (ans < total_demand[tick] - tot_assigned_flow[tick]){
                 int burstID = -1;
                 for (int b = t / 20; b; b--){
                     for (size_t i = 0; i < pool[b].size(); i++){
@@ -743,32 +711,23 @@ struct Solver {
                     ok = false;
                     break;
                 }
-                //int flow_increase = bandwidth[burstID] - 0; // XXX : must be zero, since only low servers are considered
-                G[tick].add(G[tick].S, burstID + flow_s, current_flow[burstID] = bandwidth[burstID]);
-                /*
-                int flow_increase = bandwidth[burstID] - current_flow[burstID];
-                current_flow[burstID] += flow_increase;
 
+                int flow_increase = bandwidth[burstID] - occupied_bandwidth[tick][burstID] - current_flow[burstID];
+                current_flow[burstID] += flow_increase;
                 for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt) if (G[tick].e[o].v == burstID + flow_s) {
                     G[tick].e[o].f += flow_increase;
                     break;
                 }
-                */
 
                 int flow_utility = G[tick].dinic();
                 ans += flow_utility;
                 if (flow_utility == 0) {
                     pool[remain_burst[burstID]++].pop_back();
                     pool[remain_burst[burstID]].insert (pool[remain_burst[burstID]].begin(), burstID);
-                    // XXX: pop two edges are fine, since we must just add it and useless at all
-                    G[tick].head[G[tick].S] = G[tick].e[G[tick].head[G[tick].S]].nxt;
-                    G[tick].head[burstID + flow_s] = G[tick].e[G[tick].head[burstID + flow_s]].nxt;
-                    /*
                     for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt) if (G[tick].e[o].v == burstID + flow_s) {
                         G[tick].e[o].f -= flow_increase;
                         break;
                     }
-                    */
                 }
             }
 			//cerr << "tick = " << tick << "ok = " << ok << endl;
@@ -788,8 +747,8 @@ struct Solver {
             size_t time5 = t - cnt95 + 1;
             for (int tick = 0; tick < t; tick++){
                 for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt){
-                    int s = G[tick].e[o].v - m - 2;
-                    int flow = G[tick].e[o ^ 1].f;
+                    int s = G[tick].e[o].v - flow_s;
+                    int flow = G[tick].e[o ^ 1].f + occupied_bandwidth[tick][s];
                     assert (flow <= bandwidth[s]); // validatation
                     top_traffic[s].push(flow);
                     if (top_traffic[s].size() > time5) top_traffic[s].pop();
@@ -818,7 +777,7 @@ struct Solver {
                     }
                 }
                 for (int c = 0; c < m; c++) {
-                    assert (provided[c] == customer_demand[tick][c]); // validation
+                    assert (provided[c] == customer_demand[tick][c] - assigned_flow[tick][c]); // validation
                 }
             }
         }
@@ -1022,30 +981,213 @@ struct Solver {
 		} while (time_limit_ok(FIRST_STAGE_TIME_LIMIT));
 	}
 
+	Solution get_solution(const FlowSolution& flow_sol){
+		// first round, best fit
+		const double CAPACITY_RATIO = 1.0;
+		for (int tick = 0; tick < t; tick++){
+			// parse the flow_sol
+			vector<pair<int, int>> bins[m]; // first: capacity, second: server index
+			for (int s = 0; s < n; s++){
+				for (auto r : flow_sol.allocation[s][tick])
+					bins[r.c].push_back({int(r.flow * CAPACITY_RATIO), s});
+			}
+
+			// bin packing. if the 
+			int stream_num = stream_id[tick].size();
+			for (int c = 0; c < m; c++){
+				vector<StreamRecord> streams;
+				for (int stream = 0; stream < stream_num; stream++)
+					if (demand[tick][c][stream] && stream_allocated[tick][c][stream] == -1)
+						streams.push_back({tick, c, stream});
+				sort(streams.begin(), streams.end());
+
+				set<pair<int, int>> remain_capacity; // first: remain capacity, second: server index
+				for (auto [capa, s] : bins[c])
+					remain_capacity.insert({min(capa, bandwidth[s] - occupied_bandwidth[tick][s]), s});
+
+				for (auto [tick, c, stream] : streams){
+					int F = demand[tick][c][stream];
+					auto it = remain_capacity.lower_bound({F, -1});
+					if (it == remain_capacity.end()) continue;
+
+					int capa = it->first, s = it->second;
+					occupied_bandwidth[tick][s] += F;
+					stream_allocated[tick][c][stream] = s;
+
+					remain_capacity.erase(it);
+					remain_capacity.insert({capa - F, s});
+				}
+			}
+		}
+		cerr << "first round finished.\n";
+
+		// before second round, record current server_flow and fucked streams.
+		FlowSeries flow_series[n];
+		for (int s = 0; s < n; s++){
+			vector<int> flows(t);
+			for (int tick = 0; tick < t; tick++)
+				flows[tick] = occupied_bandwidth[tick][s];
+			sort(flows.begin(), flows.end());
+			
+			flow_series[s].clear();
+			for (int tick = 0; tick < cnt95; tick++)
+				flow_series[s].low_flows.insert(flows[tick]);
+			for (int tick = cnt95; tick < t; tick++)
+				flow_series[s].high_flows.insert(flows[tick]);
+		}
+
+		vector<StreamRecord> remain_streams;
+		for (int tick = 0; tick < t; tick++)
+			for (int c = 0; c < m; c++)
+				for (int stream = 0; stream < stream_id[tick].size(); stream++)
+					if (demand[tick][c][stream] && stream_allocated[tick][c][stream] == -1)
+						remain_streams.push_back({tick, c, stream});
+		sort(remain_streams.begin(), remain_streams.end(), [&](auto x, auto y){
+			return demand[x.tick][x.c][x.stream] < demand[y.tick][y.c][y.stream];
+		});
+
+		/* second round. if a stream is fucked because it's too large
+		find a server whose cost will increase the least when allocate the stream to it. */
+		for (auto [tick, c, stream] : remain_streams){
+			int F = demand[tick][c][stream];
+			int best_s = -1;
+			double min_cost_increase = 1e10;
+			for (int s = 0; s < n; s++) if (qos[s][c]){
+				if (bandwidth[s] - occupied_bandwidth[tick][s] < F) continue;
+				
+				int old_flow95 = flow_series[s].get_flow95();
+				flow_series[s].modify(occupied_bandwidth[tick][s], occupied_bandwidth[tick][s] + F);
+				int new_flow95 = flow_series[s].get_flow95();
+				double old_cost = sqr((double)(old_flow95 - V)) / bandwidth[s];
+				double new_cost = sqr((double)(new_flow95 - V)) / bandwidth[s];
+				if (new_cost - old_cost < min_cost_increase){
+					min_cost_increase = new_cost - old_cost;
+					best_s = s;
+				}
+
+				flow_series[s].modify(occupied_bandwidth[tick][s] + F, occupied_bandwidth[tick][s]);
+			}
+			
+			if (best_s == -1) while(1); // TLE
+
+			stream_allocated[tick][c][stream] = best_s;
+			flow_series[best_s].modify(occupied_bandwidth[tick][best_s], occupied_bandwidth[tick][best_s] + F);
+			occupied_bandwidth[tick][best_s] += F;
+		}
+
+		Solution ret;
+		for (int s = 0; s < n; s++)
+			ret.allocation[s].resize(t);
+		for (int tick = 0; tick < t; tick++)
+			for (int c = 0; c < m; c++)
+				for (int stream = 0; stream < stream_id[tick].size(); stream++)
+					if (demand[tick][c][stream]){
+						assert(stream_allocated[tick][c][stream] != -1);
+						int s = stream_allocated[tick][c][stream];
+						ret.allocation[s][tick].push_back({c, stream, demand[tick][c][stream]});
+					}
+
+		ret.calc();
+		return ret;
+	}
+
 	Solution ans;
     void main(int pass) {
-		rng.seed(114514 + pass);
-		Solver_init();
+		Solver_init(pass);
 		
+		/*
+		Step 1: flow_in, set server type (HIGH/LOW/ZERO)
+		*/ 
+		set_server_order();
+		init_classification(pass);
+
+		/*
+		Step 2: binary search. Get midFlow.
+		*/
+		set_distribution(pass);
+		int L = 0, R = 0;
+		for (int s = 0; s < n; s++)
+			R = max(R, bandwidth[s]);
+		while (L < R){
+			int mid = (L + R) / 2;
+			if (check(mid)) R = mid;
+			else L = mid + 1;
+		}
+		MID_FLOW = R;
+		LARGE_STREAM_RATIO = 1.0;
+		cerr <<"MID_FLOW = " << MID_FLOW << endl;
+
+		/*
+		Step 3: determine where the "large streams" should be allocated.
+		*/
+		// get all the streams
+		vector<StreamRecord> stream_rec;
+		for (int tick = 0; tick < t; tick++){
+			for (int c = 0; c < m; c++)
+				for (int stream = 0; stream < stream_id[tick].size(); stream++)
+					if (demand[tick][c][stream])
+						stream_rec.push_back({tick, c, stream});
+		}
+		sort(stream_rec.begin(), stream_rec.end());
+		// reset & shuffle burst pool
+		for (int b = 0; b <= t / 20; b++)
+			burst_pool[b].clear();
+		for (int s = 0; s < n; s++)
+			burst_pool[t / 20].push_back(s);
+		shuffle(burst_pool[t / 20].begin(), burst_pool[t / 20].end(), rng);
+		// determine the "large streams"
+		for (auto [tick, c, stream] : stream_rec){
+			int F = demand[tick][c][stream];
+			if (F <= LARGE_STREAM_RATIO * MID_FLOW) continue; // this stream isn't "large"
+			
+			int best_s = -1;
+			for (int s = 0; s < n; s++)
+				if (qos[s][c] && server_bursted[tick][s] && bandwidth[s] - occupied_bandwidth[tick][s] >= F){
+					if (best_s == -1 || bandwidth[best_s] - occupied_bandwidth[tick][best_s] > bandwidth[s] - occupied_bandwidth[tick][s])
+						best_s = s;
+				}
+			if (best_s >= 0){
+				occupied_bandwidth[tick][best_s] += F;
+				assigned_flow[tick][c] += F;
+				tot_assigned_flow[tick] += F;
+				stream_allocated[tick][c][stream] = best_s;
+				continue;
+			}
+
+			for (int b = t / 20; b; b--){
+				for (size_t i = 0; i < burst_pool[b].size(); i++){
+					int s = burst_pool[b][i];
+					if (qos[s][c] && !server_bursted[tick][s] && bandwidth[s] >= F){
+						burst_pool[b].erase(burst_pool[b].begin() + i);
+						burst_pool[b - 1].push_back(s);
+						best_s = s;
+						break;
+					}
+				}
+				if (best_s >= 0) break;
+			}
+			if (best_s >= 0){
+				occupied_bandwidth[tick][best_s] += F;
+				assigned_flow[tick][c] += F;
+				tot_assigned_flow[tick] += F;
+				stream_allocated[tick][c][stream] = best_s;
+				server_bursted[tick][best_s] = true;
+			}
+			else cerr << "fail to allocate large stream: tick = " << tick << " c = " << c << " stream = " << stream << " flow =  " << demand[tick][c][stream] << endl;
+		}
+
+		/*
+		Step 4: binary seach again, calculate a flow_solution for the "small streams"
+		*/
 		FlowSolution flow_ans;
-		
-		int BATCHNUM = 1000;
+		reclassify(pass);
+		for (int b = t / 20; b; b--)
+			cerr << "burst_time = " << b << " server number = " << burst_pool[b].size() << endl;
+		const int BATCHNUM = 1000;
 		for (int K = 0; K < BATCHNUM; K++){
-			/*
-			TODO: set server_order here.
-			Default order is order(i) = i.
-			*/
-			set_server_order();
-
-			/*
-			TODO: number of high/low servers can be changed in each round.
-			*/
-			init_classification(pass);
-
-			/*
-			set all servers' flow95 distribution.
-			Default distribution is ratio(s) = hratio, s is HIGH; lratio, s is LOW.
-			*/
+			for (int b = 1; b <= t / 20; b++)
+				shuffle(burst_pool[b].begin(), burst_pool[b].end(), rng);
+			
 			set_distribution(pass);
 
 			int L = 0, R = 0, last = -1;
@@ -1065,7 +1207,6 @@ struct Solver {
 			FlowSolution flow_sol = get_flow_solution();
 			
 			if (pass == 0 || pass == 1){
-				flow_sol = finetune(flow_sol);
 				if (flow_sol.value < flow_ans.value)
 					flow_ans = std::move(flow_sol);
 				cerr << "cur value = " << flow_sol.value << endl;
@@ -1076,7 +1217,6 @@ struct Solver {
 			}
 		}
 		if (pass == 0 || pass == 1){
-			finetune_flow_solution(flow_ans);
 			cerr << "flow_ans value = " << flow_ans.value << endl;
 
 			ans = get_solution(flow_ans);
@@ -1129,3 +1269,4 @@ int main() {
 
     global_ans.output();
 }
+
