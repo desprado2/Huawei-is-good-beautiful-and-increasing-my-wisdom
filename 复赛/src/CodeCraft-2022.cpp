@@ -14,7 +14,7 @@ const int FIRST_STAGE_TIME_LIMIT = 35;
 const int HARD_TIME_LIMIT = 40;
 #else
 const int BINARY_SERACH_TIME_LIMIT = 80;
-const int FIRST_STAGE_TIME_LIMIT = 285;
+const int FIRST_STAGE_TIME_LIMIT = 270;
 const int HARD_TIME_LIMIT = 296;
 #define cerr 0 && cerr
 #undef assert
@@ -282,8 +282,9 @@ struct FlowSolution {
         int flow;
     };
     vector <vector<record>> allocation[N]; // allocation[s][tick] = {<c1, flow1>, <c2, flow2>, ...}
-    int flow95[N], value;
-    FlowSolution () {value = INT_MAX;}
+    int flow95[N];
+	double value;
+    FlowSolution () {value = 1e10;}
 };
 
 struct Solution {
@@ -507,9 +508,9 @@ struct Solver {
 				}
 			}
 		}
-		else if (pass == 1){
+		else {
 			/*
-			Thread 1: All the servers have possitive flow95, regardless it is HIGH or LOW.
+			Thread 1, 2, 3: All the servers have possitive flow95, regardless it is HIGH or LOW.
 			Finetune the flow solution in step 4.
 			*/
 			flow_in(1);
@@ -605,7 +606,7 @@ struct Solver {
 				}
 			}
 		}
-		else if (pass == 1){
+		else {
 			for (int s = 0; s < n; s++)
 				server[s].unassigned_burst = cnt5;
 			for (int tick = 0; tick < t; tick++){
@@ -651,6 +652,14 @@ struct Solver {
 			for (int s = 0; s < n; s++)
 				server_flow95_distribution[s] = 1.0;
 		}
+		else {
+			long double sum_bw = 0;
+			for (int s = 0; s < n; s++)
+				sum_bw += bandwidth[s];
+			long double average_bw = sum_bw / n;
+			for (int s = 0; s < n; s++)
+				server_flow95_distribution[s] = (long double)bandwidth[s] / average_bw;
+		}
 	}
 	/*
 	Add the normal edges
@@ -693,7 +702,7 @@ struct Solver {
             int ans = G[tick].dinic();
 
             for (int s : high_server[tick]){
-                current_flow[s] = min(int(midFlow * server_flow95_distribution[s]), bandwidth[s] - occupied_bandwidth[tick][s]);
+                current_flow[s] = min(int(midFlow * server_flow95_distribution[s]) + V, bandwidth[s] - occupied_bandwidth[tick][s]);
                 G[tick].add(G[tick].S, s + flow_s, current_flow[s]);
             }
             ans += G[tick].dinic();
@@ -777,7 +786,7 @@ struct Solver {
             }
             sol.value = 0;
             for (int s = 0; s < n; s++) {
-                sol.value += sol.flow95[s];
+                sol.value += max(sqr((double)sol.flow95[s] - V) / bandwidth[s] + sol.flow95[s], (double)V);
             }
         }
         {   // collect allocations, and check feasibility
@@ -927,7 +936,7 @@ struct Solver {
         FlowSolution cur = ans;
         vector <int> order = server_indices;
         sort(order.begin(), order.end(), [&] (auto u, auto v) {
-            return ans.flow95[u] < ans.flow95[v];
+            return sqr((double)cur.flow95[u] - V) / bandwidth[u] < sqr((double)cur.flow95[v] - V) / bandwidth[v];
         });
 
         int error[n];
@@ -993,7 +1002,7 @@ struct Solver {
                     if (ok) {
                         for (auto tick : last_to_check) G[tick].dinic();
                         auto nxt = get_flow_solution();
-                        if (nxt.value <= cur.value);
+                        if (nxt.value <= cur.value)
                         	cur = std::move(nxt);
                     }
                     error[u] = 0;
@@ -1102,7 +1111,7 @@ struct Solver {
 				flow_series[s].modify(occupied_bandwidth[tick][s] + F, occupied_bandwidth[tick][s]);
 			}
 			
-			if (best_s == -1) while(1); // TLE
+			if (best_s == -1) return Solution();
 
 			stream_allocated[tick][c][stream] = best_s;
 			flow_series[best_s].modify(occupied_bandwidth[tick][best_s], occupied_bandwidth[tick][best_s] + F);
@@ -1147,7 +1156,11 @@ struct Solver {
 			if (check(mid)) R = mid;
 			else L = mid + 1;
 		}
-		MID_FLOW = R;
+		vector<int> predict_flow95;
+		for (int s = 0; s < n; s++)
+			predict_flow95.push_back(min(int(R * server_flow95_distribution[s]) + V, bandwidth[s]));
+		sort(predict_flow95.begin(), predict_flow95.end());
+		MID_FLOW = predict_flow95[int((n - 1) * 1.0)];
 		LARGE_STREAM_RATIO = 1.0;
 		cerr <<"MID_FLOW = " << MID_FLOW << endl;
 
@@ -1219,7 +1232,7 @@ struct Solver {
 				continue;
 			}
 			// fail to allocate this stream
-			cerr << "fail to allocate large stream: tick = " << tick << " c = " << c << " stream = " << stream << " flow =  " << demand[tick][c][stream] << endl;
+			//cerr << "fail to allocate large stream: tick = " << tick << " c = " << c << " stream = " << stream << " flow =  " << demand[tick][c][stream] << endl;
 		}
 
 		/*
@@ -1227,8 +1240,8 @@ struct Solver {
 		*/
 		FlowSolution flow_ans;
 		reclassify(pass);
-		//for (int b = t / 20; b; b--)
-		//	cerr << "burst_time = " << b << " server number = " << burst_pool[b].size() << endl;
+		for (int b = t / 20; b >= 0; b--)
+			cerr << "burst_time = " << b << " server number = " << burst_pool[b].size() << endl;
 		const int BATCHNUM = 1000;
 		for (int K = 0; K < BATCHNUM; K++){
 			for (int b = 1; b <= t / 20; b++)
@@ -1253,23 +1266,22 @@ struct Solver {
 			
 			FlowSolution flow_sol = get_flow_solution();
 			
-			if (pass == 0 || pass == 1){
-				flow_sol = finetune(flow_sol);
-				if (flow_sol.value < flow_ans.value)
-					flow_ans = std::move(flow_sol);
-				cerr << "this flow_sol's value = " << flow_sol.value << endl;
-				if (!time_limit_ok(BINARY_SERACH_TIME_LIMIT)) break;
-			}
-			else{
-
-			}
+			flow_sol = finetune(flow_sol);
+			if (flow_sol.value < flow_ans.value)
+				flow_ans = std::move(flow_sol);
+			cerr << "this flow_sol's value = " << flow_sol.value << endl;
+			if (!time_limit_ok(BINARY_SERACH_TIME_LIMIT)) break;
 		}
-		if (pass == 0 || pass == 1){
-			finetune_flow_solution(flow_ans);
-			cerr << "flow_ans value = " << flow_ans.value << endl;
+		/*
+		after binary search, finetune the flow_ans for about 200 seconds.
+		*/
+		finetune_flow_solution(flow_ans);
+		cerr << "flow_ans value = " << flow_ans.value << endl;
 
-			ans = get_solution(flow_ans);
-		}
+		/*
+		Step 5: bin packing, calculate the final solution.
+		*/
+		ans = get_solution(flow_ans);
 
     }
 };
@@ -1286,7 +1298,7 @@ void set_affinity (int core) {
 #ifdef LOCAL
 const int NThread = 1;
 #else
-const int NThread = 2;
+const int NThread = 4;
 #endif
 
 Solver worker[NThread];
@@ -1316,6 +1328,6 @@ int main() {
 
     dispatch_threads (call_worker_main);
 
-    global_ans.output();
+    if (global_ans.value < 1e9) // if no valid solution, just report "cannot open output file"
+		global_ans.output();
 }
-
