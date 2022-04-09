@@ -466,7 +466,7 @@ struct Solver {
 	void init_classification(int pass){
 		memset(bursted_value, 0, sizeof(bursted_value));
 
-		if (pass == 0){
+		if (/*pass == 0*/ false){
 			/*
 			Thread 0: set a estimate ratio for flow_in(), so that we can set how many servers are HIGH and the others are LOW
 			Only HIGH servers' have possitive flow95, LOW servers' flow95 are all zero.
@@ -580,16 +580,8 @@ struct Solver {
 			high_server[tick].clear(), burst_server[tick].clear();
 			bursted_value[tick] = 0;
 		}
-		// flow_in again, but consider the predetermined burst server
-		/*for (int tick = 0; tick < t; tick++){
-			init_graph(tick);
-			for (int s : server_indices){
-				G[tick].add(G[tick].S, s + flow_s, bandwidth[s] - occupied_bandwidth[tick][s]);
-				G[tick].dinic();
-			}
-		}*/
 
-		if (pass == 0){
+		if (/*pass == 0*/ false){
 			for (int s = 0; s < n; s++)
 				server[s].unassigned_burst = cnt5;
 			for (int tick = 0; tick < t; tick++){
@@ -643,12 +635,12 @@ struct Solver {
 	It can be set in other ways, such as simulated annealing.
 	*/
 	void set_distribution(int pass){
-		if (pass == 0){
+		if (/*pass == 0*/ false){
 			for (int s = 0; s < n; s++)
 				if (server[s].type == 1) server_flow95_distribution[s] = 1.0;
 				else server_flow95_distribution[s] = 0;
 		}
-		else if (pass == 1){
+		else if (/*pass == 1*/ false){
 			for (int s = 0; s < n; s++)
 				server_flow95_distribution[s] = 1.0;
 		}
@@ -1200,7 +1192,7 @@ struct Solver {
 			}
 			// else, if the stream can be allocated to a server that has bursted in former check(), let the server burst and allocate it.
 			for (int s = 0; s < n; s++)
-				if (qos[s][c] && !server_bursted[tick][s] && burst_plan[tick][s] && bandwidth[s] >= F){
+				if (qos[s][c] && server[s].unassigned_burst && !server_bursted[tick][s] && burst_plan[tick][s] && bandwidth[s] >= F){
 					if (best_s == -1 || bandwidth[best_s] > bandwidth[s])
 						best_s = s;
 				}
@@ -1216,7 +1208,7 @@ struct Solver {
 			}
 			// else, if the stream can be allocated to some unburst server, let the server burst and allocate it.
 			for (int s = 0; s < n; s++)
-				if (qos[s][c] && !server_bursted[tick][s] && server[s].unassigned_burst > 0 && bandwidth[s] >= F){
+				if (qos[s][c] && server[s].unassigned_burst && !server_bursted[tick][s] && server[s].unassigned_burst > 0 && bandwidth[s] >= F){
 					if (best_s == -1 ||
 					    make_pair(server[best_s].unassigned_burst, -bandwidth[best_s]) < make_pair(server[s].unassigned_burst, -bandwidth[s]))
 						best_s = s;
