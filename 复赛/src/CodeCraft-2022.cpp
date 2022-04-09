@@ -170,11 +170,16 @@ void input_data () {
 	}
 	cerr << "n = " << n << " m = " << m << " t = " << t << endl;
 }
-
+int deg[N];
 void init() {
 	input_data();
 	cnt95 = (int)ceil(0.95 * t);
 	cnt5 = t - cnt95;
+	for (int s = 0; s < n; s++) {
+		for (int c = 0; c < m; c++) {
+			if (qos[s][c]) deg[s]++;
+		}
+	}
 }
 
 struct server_record {
@@ -195,7 +200,7 @@ struct customer_record {
 		return server == a.server && stream == a.stream && flow == a.flow;
 	}
 	bool operator < (const customer_record& a) const {
-		if (flow != a.flow) return flow < a.flow;
+		if (flow != a.flow) return flow > a.flow;
 		if (server != a.server) return server < a.server;
 		return stream < a.stream;
 	}
@@ -234,11 +239,14 @@ struct Solution {
         freopen (FILE_OUTPUT, "w", stdout);
         for (int tick = 0; tick < t; tick ++) {
 			map<int, vector<int>> alloc[m]; // alloc[customer]: {server:{stream1, stream2, ...}, server:{...}}
+			int total = 0;
 			for (int s = 0; s < n; s++){
 				for (auto r : allocation[s][tick]){
+					total += r.flow;
 					alloc[r.customer][s].push_back(r.stream);
 				}
 			}
+			assert (total == total_demand[tick]);
 			for (int c = 0; c < m; c++){
 				printf("%s:", cid[c].c_str());
 				bool first = true;
@@ -246,8 +254,10 @@ struct Solution {
 					if (first) first = false;
 					else putchar(',');
 					printf("<%s", sid[server].c_str());
-					for (auto stream : streamVec)
+					for (auto stream : streamVec) {
 						printf(",%s", stream_id[tick][stream].c_str());
+						total += demand[tick][c][stream];
+					}
 					putchar('>');
 				}
 				putchar('\n');
@@ -315,7 +325,7 @@ struct Solver {
 		vector <int> servers(n);
 		iota(servers.begin(), servers.end(), 0);
 		sort(servers.begin(), servers.end(), [] (auto u, auto v){
-			return bandwidth[u] > bandwidth[v];
+			return make_pair(bandwidth[u], -deg[u]) > make_pair(bandwidth[v], -deg[v]);
 		});
 		vector <vector <int>> server_used(n, vector <int> (t));
 		
