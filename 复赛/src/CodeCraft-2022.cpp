@@ -1,3 +1,9 @@
+/*
+ssy's strategy:
+1. LARGE_STREAM_RATIO
+2. ALL_SERVERS or only those servers actually burst
+3. whether do binary search after calculate()
+*/
 #include <bits/stdc++.h>
 #include <sys/mman.h>
 using namespace std;
@@ -683,21 +689,21 @@ struct Solver {
         return ok;
 	}
 
+	bool check_one_tick(int tick, int midFlow){
+		init_graph(tick, G[tick]);
+		for (int s : server_indices) if (server_bursted[tick][s])
+			G[tick].add(G[tick].S, s + flow_s, bandwidth[s] - occupied_bandwidth[tick][s]);
+		int ans = G[tick].dinic();
+		
+		for (int s : server_indices) if (!server_bursted[tick][s])
+			G[tick].add(G[tick].S, s + flow_s, min(int(midFlow * server_flow95_distribution[s]) + V, bandwidth[s] - occupied_bandwidth[tick][s]));
+		ans += G[tick].dinic();
+		return (ans == total_demand[tick] - tot_assigned_flow[tick]);
+	};
 	/*
 	ssy's strategy
 	*/
 	void calculate(){
-		auto check_one_tick = [&] (int tick, int midFlow){
-			init_graph(tick, G[tick]);
-			for (int s : server_indices) if (server_bursted[tick][s])
-				G[tick].add(G[tick].S, s + flow_s, bandwidth[s] - occupied_bandwidth[tick][s]);
-			int ans = G[tick].dinic();
-			
-			for (int s : server_indices) if (!server_bursted[tick][s])
-				G[tick].add(G[tick].S, s + flow_s, min(int(midFlow * server_flow95_distribution[s]) + V, bandwidth[s] - occupied_bandwidth[tick][s]));
-			ans += G[tick].dinic();
-			return (ans == total_demand[tick] - tot_assigned_flow[tick]);
-		};
 		int Rmax = 0;
 		for (int s = 0; s < n; s++)
 			if (server_flow95_distribution[s] > 0)
@@ -1197,14 +1203,15 @@ struct Solver {
 		Step 2: binary search. Get midFlow.
 		*/
 		set_distribution(pass);
-		int L = 0, R = 0;
+		int L = 0, R = 0, last = -1;
 		for (int s = 0; s < n; s++)
 			R = max(R, bandwidth[s]);
 		while (L < R){
 			int mid = (L + R) / 2;
-			if (check(mid)) R = mid;
+			if (check(last = mid)) R = mid;
 			else L = mid + 1;
 		}
+		if (last != R) check(R);
 		vector<int> predict_flow95;
 		for (int s = 0; s < n; s++)
 			predict_flow95.push_back(min(int(R * server_flow95_distribution[s]) + V, bandwidth[s]));
@@ -1290,6 +1297,25 @@ struct Solver {
 		FlowSolution flow_ans;
 		reclassify(pass);
 		calculate();
+		
+		L = 0, R = 0, last = -1;
+		for (int s = 0; s < n; s++)
+			if (server_flow95_distribution[s] > 0)
+				R = max(R, int(bandwidth[s] / server_flow95_distribution[s] + 0.5));
+		while (L < R){
+			int mid = (L + R) / 2;
+			last = mid;
+			bool ok = true;
+			for (int tick = 0; tick < t; tick++)
+				ok &= check_one_tick(tick, mid);
+			if (ok) R = mid;
+			else L = mid + 1;
+		}
+		if (last != R){
+			for (int tick = 0; tick < t; tick++)
+				check_one_tick(tick, R);
+		}
+
 		flow_ans = get_flow_solution();
 		
 		/*
