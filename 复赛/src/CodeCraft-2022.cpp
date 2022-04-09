@@ -66,6 +66,8 @@ int demand[TS][M][S], customer_demand[TS][M], total_demand[TS];
 int bandwidth[N];
 bool qos[N][M]; // ping[i][j] < q
 
+#define calc_cost(x, s) (((x) <= V) ? V : (sqr((x) - V) / bandwidth[s] + x))
+
 inline vector <string> getline_split (FILE* f) {
 	const int BUFFER_SIZE = 1 << 16;
 	static char tmp[BUFFER_SIZE];
@@ -841,7 +843,7 @@ struct Solver {
             }
             sol.value = 0;
             for (int s = 0; s < n; s++) {
-                sol.value += max(sqr((double)sol.flow95[s] - V) / bandwidth[s] + sol.flow95[s], (double)V);
+                sol.value += calc_cost(sol.flow95[s], s);
             }
         }
         {   // collect allocations, and check feasibility
@@ -1156,8 +1158,8 @@ struct Solver {
 				int old_flow95 = flow_series[s].get_flow95();
 				flow_series[s].modify(occupied_bandwidth[tick][s], occupied_bandwidth[tick][s] + F);
 				int new_flow95 = flow_series[s].get_flow95();
-				double old_cost = sqr((double)(old_flow95 - V)) / bandwidth[s];
-				double new_cost = sqr((double)(new_flow95 - V)) / bandwidth[s];
+				double old_cost = calc_cost(old_flow95, s);
+				double new_cost = calc_cost(new_flow95, s);
 				if (new_cost - old_cost < min_cost_increase){
 					min_cost_increase = new_cost - old_cost;
 					best_s = s;
