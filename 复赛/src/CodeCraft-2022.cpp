@@ -1140,14 +1140,15 @@ struct Solver {
 		Step 2: binary search. Get midFlow.
 		*/
 		set_distribution(pass);
-		int L = 0, R = 0;
+		int L = 0, R = 0, last = -1;
 		for (int s = 0; s < n; s++)
 			R = max(R, bandwidth[s]);
 		while (L < R){
 			int mid = (L + R) / 2;
-			if (check(mid)) R = mid;
+			if (check(last = mid)) R = mid;
 			else L = mid + 1;
 		}
+		if (last != R) check(R);
 		vector<int> predict_flow95;
 		for (int s = 0; s < n; s++)
 			predict_flow95.push_back(min(int(R * server_flow95_distribution[s]) + V, bandwidth[s]));
