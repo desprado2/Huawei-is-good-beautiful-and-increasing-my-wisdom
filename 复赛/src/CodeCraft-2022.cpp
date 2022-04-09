@@ -466,93 +466,49 @@ struct Solver {
 	void init_classification(int pass){
 		memset(bursted_value, 0, sizeof(bursted_value));
 
-		if (/*pass == 0*/ false){
-			/*
-			Thread 0: set a estimate ratio for flow_in(), so that we can set how many servers are HIGH and the others are LOW
-			Only HIGH servers' have possitive flow95, LOW servers' flow95 are all zero.
-			Finetune the flow solution in step 4.
-			*/
-			flow_in(1.0);
+		/*
+		Thread 1, 2, 3: All the servers have possitive flow95, regardless it is HIGH or LOW.
+		Finetune the flow solution in step 4.
+		*/
+		flow_in(1);
 
-			for (int tick = 0; tick < t; tick++){
-				burst_server[tick].clear();
-				high_server[tick].clear();
-				for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt){
-					int s = G[tick].e[o].v - flow_s;
-					int flow = G[tick].e[o ^ 1].f;
-					server[s].flow[tick] = {flow, tick};
-				}
-			}
-
-			for (auto s : server_indices){
-				auto &si = server[s];
-
-				sort(si.flow, si.flow + t, [&] (auto x, auto y) {
-					if (x.first != y.first) return x.first < y.first;
-					return total_demand[x.second] < total_demand[y.second];
-				});
-				si.unassigned_burst = 0;
-				if (si.flow[cnt95 - 1].first > 0){
-					si.type = 1; // HIGH
-					for (int tick = 0; tick < cnt95; tick++){
-						high_server[si.flow[tick].second].push_back(s);
-					}
-					for (int tick = cnt95; tick < t; tick++) {
-						burst_server[si.flow[tick].second].push_back(s);
-						bursted_value[si.flow[tick].second] += int(bandwidth[s] * 0.15);
-					}
-				}
-				else {
-					si.type = 2; // LOW
-					si.unassigned_burst = cnt5;
-				}
+		for (int tick = 0; tick < t; tick++){
+			burst_server[tick].clear();
+			high_server[tick].clear();
+			for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt){
+				int s = G[tick].e[o].v - m - 2;
+				int flow = G[tick].e[o ^ 1].f;
+				server[s].flow[tick] = {flow, tick};
 			}
 		}
-		else {
-			/*
-			Thread 1, 2, 3: All the servers have possitive flow95, regardless it is HIGH or LOW.
-			Finetune the flow solution in step 4.
-			*/
-			flow_in(1);
 
-			for (int tick = 0; tick < t; tick++){
-				burst_server[tick].clear();
-				high_server[tick].clear();
-				for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt){
-					int s = G[tick].e[o].v - m - 2;
-					int flow = G[tick].e[o ^ 1].f;
-					server[s].flow[tick] = {flow, tick};
+		for (auto s : server_indices){
+			auto &si = server[s];
+
+			sort(si.flow, si.flow + t, [&] (auto x, auto y) {
+				if (x.first != y.first) return x.first < y.first;
+				return total_demand[x.second] < total_demand[y.second];
+			});
+			si.unassigned_burst = 0;
+			if (si.flow[cnt95 - 1].first > 0){
+				si.type = 1; // HIGH
+				for (int tick = 0; tick < cnt95; tick++){
+					high_server[si.flow[tick].second].push_back(s);
+				}
+				for (int tick = cnt95; tick < t; tick++) {
+					//si.unassigned_burst++;
+					//high_server[si.flow[tick].second].push_back(s);
+					//totalCost[si.flow[tick].second] += si.flow[tick].first;
+					burst_server[si.flow[tick].second].push_back(s);
+					bursted_value[si.flow[tick].second] += int(bandwidth[s] * 0.3);
 				}
 			}
-
-			for (auto s : server_indices){
-				auto &si = server[s];
-
-				sort(si.flow, si.flow + t, [&] (auto x, auto y) {
-					if (x.first != y.first) return x.first < y.first;
-					return total_demand[x.second] < total_demand[y.second];
-				});
-				si.unassigned_burst = 0;
-				if (si.flow[cnt95 - 1].first > 0){
-					si.type = 1; // HIGH
-					for (int tick = 0; tick < cnt95; tick++){
-						high_server[si.flow[tick].second].push_back(s);
-					}
-					for (int tick = cnt95; tick < t; tick++) {
-						//si.unassigned_burst++;
-						//high_server[si.flow[tick].second].push_back(s);
-						//totalCost[si.flow[tick].second] += si.flow[tick].first;
-						burst_server[si.flow[tick].second].push_back(s);
-						bursted_value[si.flow[tick].second] += int(bandwidth[s] * 0.3);
-					}
-				}
-				else {
-					si.type = 2; // LOW
-					for (int tick = 0; tick < t; tick++)
-						high_server[tick].push_back(s);
-					si.unassigned_burst = cnt5;
-				}
-			}			
+			else {
+				si.type = 2; // LOW
+				for (int tick = 0; tick < t; tick++)
+					high_server[tick].push_back(s);
+				si.unassigned_burst = cnt5;
+			}
 		}
 
         sortedMoments.resize(t);
@@ -580,37 +536,17 @@ struct Solver {
 			high_server[tick].clear(), burst_server[tick].clear();
 			bursted_value[tick] = 0;
 		}
-
-		if (/*pass == 0*/ false){
-			for (int s = 0; s < n; s++)
-				server[s].unassigned_burst = cnt5;
-			for (int tick = 0; tick < t; tick++){
-				for (int s = 0; s < n; s++){
-					if (server_bursted[tick][s]){
-						burst_server[tick].push_back(s);
-						server[s].unassigned_burst--;
-						bursted_value[tick] += occupied_bandwidth[tick][s] + int((bandwidth[s] - occupied_bandwidth[tick][s]) * 0.3);
-					}
-					else{
-						if (server[s].type == 1) // only consider HIGH server.
-							high_server[tick].push_back(s);
-					}
+		for (int s = 0; s < n; s++)
+			server[s].unassigned_burst = cnt5;
+		for (int tick = 0; tick < t; tick++){
+			for (int s = 0; s < n; s++){
+				if (server_bursted[tick][s]){
+					burst_server[tick].push_back(s);
+					server[s].unassigned_burst--;
+					bursted_value[tick] += occupied_bandwidth[tick][s] + int((bandwidth[s] - occupied_bandwidth[tick][s]) * 0.3);
 				}
-			}
-		}
-		else {
-			for (int s = 0; s < n; s++)
-				server[s].unassigned_burst = cnt5;
-			for (int tick = 0; tick < t; tick++){
-				for (int s = 0; s < n; s++){
-					if (server_bursted[tick][s]){
-						burst_server[tick].push_back(s);
-						server[s].unassigned_burst--;
-						bursted_value[tick] += occupied_bandwidth[tick][s] + int((bandwidth[s] - occupied_bandwidth[tick][s]) * 0.3);
-					}
-					else{
-						high_server[tick].push_back(s);
-					}
+				else{
+					high_server[tick].push_back(s);
 				}
 			}
 		}
@@ -635,31 +571,20 @@ struct Solver {
 	It can be set in other ways, such as simulated annealing.
 	*/
 	void set_distribution(int pass){
-		if (/*pass == 0*/ false){
-			for (int s = 0; s < n; s++)
-				if (server[s].type == 1) server_flow95_distribution[s] = 1.0;
-				else server_flow95_distribution[s] = 0;
-		}
-		else if (/*pass == 1*/ false){
-			for (int s = 0; s < n; s++)
-				server_flow95_distribution[s] = 1.0;
-		}
-		else {
-			long double sum_bw = 0;
-			for (int s = 0; s < n; s++)
-				sum_bw += bandwidth[s];
-			long double average_bw = sum_bw / n;
-			for (int s = 0; s < n; s++)
-				server_flow95_distribution[s] = (long double)bandwidth[s] / average_bw;
-		}
+		long double sum_bw = 0;
+		for (int s = 0; s < n; s++)
+			sum_bw += bandwidth[s];
+		long double average_bw = sum_bw / n;
+		for (int s = 0; s < n; s++)
+			server_flow95_distribution[s] = (long double)bandwidth[s] / average_bw;
 	}
 	/*
 	Add the normal edges
 	*/
-	void init_graph(int tick){
-        G[tick] = Gbase;
+	void init_graph(int tick, FlowGraph &G){
+        G = Gbase;
         for (int c = 0; c < m; c++)
-            G[tick].add(c + flow_c, G[tick].T, customer_demand[tick][c] - assigned_flow[tick][c]);
+            G.add(c + flow_c, G.T, customer_demand[tick][c] - assigned_flow[tick][c]);
     }
 	vector<bool> burst_plan[TS]; // burst_plan[tick][s] : bool
 	/*
@@ -678,7 +603,7 @@ struct Solver {
         }
 
         for (auto tick : sortedMoments) {
-            init_graph(tick);
+            init_graph(tick, G[tick]);
 
             burst_plan[tick].resize(n);
             int current_flow[n];
@@ -756,6 +681,138 @@ struct Solver {
             }
         }
         return ok;
+	}
+
+	/*
+	ssy's strategy
+	*/
+	void calculate(){
+		auto check_one_tick = [&] (int tick, int midFlow){
+			init_graph(tick, G[tick]);
+			for (int s : server_indices) if (server_bursted[tick][s])
+				G[tick].add(G[tick].S, s + flow_s, bandwidth[s] - occupied_bandwidth[tick][s]);
+			int ans = G[tick].dinic();
+			
+			for (int s : server_indices) if (!server_bursted[tick][s])
+				G[tick].add(G[tick].S, s + flow_s, min(int(midFlow * server_flow95_distribution[s]) + V, bandwidth[s] - occupied_bandwidth[tick][s]));
+			ans += G[tick].dinic();
+			return (ans == total_demand[tick] - tot_assigned_flow[tick]);
+		};
+		int Rmax = 0;
+		for (int s = 0; s < n; s++)
+			if (server_flow95_distribution[s] > 0)
+				Rmax = max(Rmax, int((double)bandwidth[s] / server_flow95_distribution[s] + 0.5));
+			
+		/*
+		initialize
+		*/
+		set<pair<int, int>, greater<pair<int, int>>> server_rec[n]; // record the flow at unburst moments. first: flow, second: tick
+		vector<int> bursted_flow;
+		vector<int> server_flow[t];
+		bursted_flow.resize(t, 0);
+		for (int tick = 0; tick < t; tick++){
+			int L = 0, R = Rmax, last = -1;
+			while (L < R){
+				int mid = (L + R) / 2;
+				if (check_one_tick(tick, last = mid)) R = mid;
+				else L = mid + 1;
+			}
+			if (last != R) check_one_tick(tick, R);
+			
+			server_flow[tick].resize(n);
+			for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt){
+				int s = G[tick].e[o].v - flow_s;
+				server_flow[tick][s] = G[tick].e[o ^ 1].f;
+				if (!server_bursted[tick][s])
+					server_rec[s].insert({server_flow[tick][s], tick});
+				else bursted_flow[tick] += server_flow[tick][s] - occupied_bandwidth[tick][s];
+			}
+		}
+		for (int s = 0; s < n; s++) assert(server[s].unassigned_burst >= 0);
+		set<int> unassigned_server;
+		for (int s = 0; s < n; s++)
+			if (server[s].unassigned_burst) unassigned_server.insert(s);
+		vector<int> tick_index;
+		for (int tick = 0; tick < t; tick++)
+			tick_index.push_back(tick);
+		
+		// determine the bursts
+		set<int> ALL_SERVERS;
+		for (int s = 0; s < n; s++) ALL_SERVERS.insert(s);
+		while (!unassigned_server.empty()){
+			// get all the burst_tick in this round
+			map<int, set<int>> burst_tick; // {tick: candidate server1, candidate server2, ...}
+			for (auto s : unassigned_server){
+				auto [flow, tick] = *server_rec[s].begin();
+				burst_tick[tick].insert(s);
+			}
+			sort(tick_index.begin(), tick_index.end(), [&](int x, int y){
+				return total_demand[x] - tot_assigned_flow[x] - bursted_flow[x] > total_demand[y] - tot_assigned_flow[y] - bursted_flow[y];
+			});
+			for (int i = 0; i < t * 0.04; i++)
+				if (!burst_tick.count(tick_index[i])) burst_tick[tick_index[i]] = ALL_SERVERS;
+			
+			bool have_new_burst = false;
+			// for each tick in burst_tick, find a server to burst
+			for (auto & [tick, candidate_servers] : burst_tick){
+				if (total_demand[tick] == tot_assigned_flow[tick] + bursted_flow[tick])
+					continue;
+				have_new_burst = true;
+				
+				FlowGraph current_G_after_burst;
+				init_graph(tick, current_G_after_burst);
+				for (int s = 0; s < n; s++) if (server_bursted[tick][s])
+					current_G_after_burst.add(current_G_after_burst.S, s + flow_s, bandwidth[s] - occupied_bandwidth[tick][s]);
+				current_G_after_burst.dinic();
+
+				int best_s = -1, max_utility = -INT_MAX;
+				for (int s : candidate_servers)
+					if (!server_bursted[tick][s] && server[s].unassigned_burst){
+						FlowGraph temp = current_G_after_burst;
+						temp.add(temp.S, s + flow_s, bandwidth[s] - occupied_bandwidth[tick][s]);
+						int utility = temp.dinic() - server_flow[tick][s];
+						if (utility > max_utility)
+							max_utility = utility, best_s = s;
+					}
+				if (best_s == -1){
+					int B =  candidate_servers.size() < n;
+					cerr << "get fucked at tick " << tick << ", tick in TYPE 1 : " << B << endl;
+					cerr <<"-------------------\n";
+					continue;
+				}
+				
+				// now burst the best_s
+				// update server_bursted, server_flow, server_rec, bursted_flow and unassigned_server
+				//cerr << "at tick " << tick << " burst server " << best_s << " remain burst time = " << server[best_s].unassigned_burst << endl;
+				server_bursted[tick][best_s] = true;
+				server[best_s].unassigned_burst--;
+				if (!server[best_s].unassigned_burst){
+					unassigned_server.erase(best_s);
+				}
+				
+				int L = 0, R = Rmax, last = -1;
+				while (L < R){
+					int mid = (L + R) / 2;
+					if (check_one_tick(tick, last = mid)) R = mid;
+					else L = mid + 1;
+				}
+				if (last != R) check_one_tick(tick, R);
+
+				bursted_flow[tick] = 0;	
+				for (int o = G[tick].head[G[tick].S]; o; o = G[tick].e[o].nxt){
+					int s = G[tick].e[o].v - flow_s;
+					server_rec[s].erase({server_flow[tick][s], tick});
+					server_flow[tick][s] = G[tick].e[o ^ 1].f;
+					if (!server_bursted[tick][s])
+						server_rec[s].insert({server_flow[tick][s], tick});
+					else bursted_flow[tick] += server_flow[tick][s] - occupied_bandwidth[tick][s];
+				}
+			}
+			//this_thread::sleep_for(chrono::seconds(1));
+			if (!have_new_burst) break;
+		}
+		for (int s = 0; s < n; s++)
+			if (server[s].unassigned_burst) cerr << "server " << s << " remain burst time " << server[s].unassigned_burst << endl;
 	}
 
 	FlowSolution get_flow_solution () {
@@ -856,7 +913,7 @@ struct Solver {
                         allow[i] = cur.flow95[i] + error[i] - occupied_bandwidth[tick][i];
                     }
                 }
-                init_graph(tick);
+                init_graph(tick, G[tick]);
 
                 for (auto s : normal)
                     if (s == rs || allow[s])
@@ -981,7 +1038,7 @@ struct Solver {
                             ok = false;
                             break;
                         }
-                        init_graph(tick);
+                        init_graph(tick, G[tick]);
                         for (int s = 0; s < n; s++) if (allow[s])
                             G[tick].add(G[tick].S, s + flow_s, allow[s]);
                         if (no_check) continue;
@@ -1153,7 +1210,7 @@ struct Solver {
 			predict_flow95.push_back(min(int(R * server_flow95_distribution[s]) + V, bandwidth[s]));
 		sort(predict_flow95.begin(), predict_flow95.end());
 		MID_FLOW = predict_flow95[int((n - 1) * 1.0)];
-		LARGE_STREAM_RATIO = 1.0;
+		LARGE_STREAM_RATIO = 1.5;
 		cerr <<"MID_FLOW = " << MID_FLOW << endl;
 
 		/*
@@ -1224,48 +1281,19 @@ struct Solver {
 				continue;
 			}
 			// fail to allocate this stream
-			//cerr << "fail to allocate large stream: tick = " << tick << " c = " << c << " stream = " << stream << " flow =  " << demand[tick][c][stream] << endl;
+			cerr << "fail to allocate large stream: tick = " << tick << " c = " << c << " stream = " << stream << " flow =  " << demand[tick][c][stream] << endl;
 		}
 
 		/*
-		Step 4: binary seach again, calculate a flow_solution for the "small streams"
+		Step 4: Use ssy's strategy, calculate a flow_solution for the "small streams"
 		*/
 		FlowSolution flow_ans;
 		reclassify(pass);
-		for (int b = t / 20; b >= 0; b--)
-			cerr << "burst_time = " << b << " server number = " << burst_pool[b].size() << endl;
-		const int BATCHNUM = 1000;
-		for (int K = 0; K < BATCHNUM; K++){
-			for (int b = 1; b <= t / 20; b++)
-				shuffle(burst_pool[b].begin(), burst_pool[b].end(), rng);
-			
-			set_distribution(pass);
-
-			int L = 0, R = 0, last = -1;
-			for (int s = 0; s < n; s++)
-				if (server_flow95_distribution[s] > 0)
-					R = max(R, (int)((double)bandwidth[s] / server_flow95_distribution[s] + 0.5));
-			while (L < R){
-				//cerr << "L = " << L << " R = " << R << endl;
-				int mid = (L + R) / 2;
-				if (check(last = mid)) R = mid;
-				else L = mid + 1;
-
-				if (!time_limit_ok(FIRST_STAGE_TIME_LIMIT)) {cerr << "TLE\n"; break;}
-			}
-			if (last != R) check(R);
-			cerr << "pass " << pass << " round " << K << " : R = " << R << endl;
-			
-			FlowSolution flow_sol = get_flow_solution();
-			
-			flow_sol = finetune(flow_sol);
-			if (flow_sol.value < flow_ans.value)
-				flow_ans = std::move(flow_sol);
-			cerr << "this flow_sol's value = " << flow_sol.value << endl;
-			if (!time_limit_ok(BINARY_SERACH_TIME_LIMIT)) break;
-		}
+		calculate();
+		flow_ans = get_flow_solution();
+		
 		/*
-		after binary search, finetune the flow_ans for about 200 seconds.
+		finetune the flow_ans for about 200 seconds.
 		*/
 		finetune_flow_solution(flow_ans);
 		cerr << "flow_ans value = " << flow_ans.value << endl;
