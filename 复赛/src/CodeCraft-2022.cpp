@@ -183,7 +183,7 @@ struct server_record {
 		return customer == a.customer && stream == a.stream && flow == a.flow;
 	}
 	bool operator < (const server_record& a) const {
-		if (flow != a.flow) return flow < a.flow;
+		if (flow != a.flow) return flow > a.flow;
 		if (customer != a.customer) return customer < a.customer;
 		return stream < a.stream;
 	}
