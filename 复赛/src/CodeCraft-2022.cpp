@@ -309,7 +309,8 @@ struct Solver {
 			ans.allocation[s].clear();
 			ans.allocation[s].resize(t);
 		}
-		vector <vector <vector<server_record>>> unsatisfied(t);
+		vector <vector <vector<server_record>>> unsatisfied(t); //unsatisfied[tick][c] = {<c, stream, flow>, ...}
+		int all_flow = 0;
 		vector <vector <int>> sum_demands(t);
 		for (int tick = 0; tick < t; tick++) {
 			unsatisfied[tick].resize(m);
@@ -319,9 +320,11 @@ struct Solver {
 				for (int k = 0; k < stream_cnt; k++) if (demand[tick][c][k]) {
 					unsatisfied[tick][c].push_back({c, k, demand[tick][c][k]});
 					sum_demands[tick][c] += demand[tick][c][k];
+					all_flow += demand[tick][c][k];
 				}
 			}
 		}
+		cerr << "all_flow = " << all_flow << endl;
 		vector <int> servers(n);
 		iota(servers.begin(), servers.end(), 0);
 		sort(servers.begin(), servers.end(), [] (auto u, auto v){
@@ -339,19 +342,28 @@ struct Solver {
 		};
 		for (int s : servers) {
 			vector <int> time_slots(t), s_demand(t);
+			// s_demand[tick]: 对于服务器s而言，在时刻t的有效流量
 			for (int tick = 0; tick < t; tick ++) {
 				for (int c = 0; c < m; c++) if (qos[s][c]) {
-					s_demand[tick] += sum_demands[tick][c];
+					for (auto [customer, stream, flow] : unsatisfied[tick][c]){
+						if (flow <= bandwidth[s]) {s_demand[tick] += flow;}
+						//if (s == 57 && c == 4) cerr << "tick : " << tick << "flow : " << flow << endl;
+					}
 				}
 			}
+			int tot_valid_demand = 0;
 			iota(time_slots.begin(), time_slots.end(), 0);
-			sort(time_slots.begin(), time_slots.begin(), [&] (auto u, auto v) {
+			sort(time_slots.begin(), time_slots.end(), [&] (auto u, auto v) {
 				return s_demand[u] > s_demand[v];
 			});
 			time_slots.resize(cnt5);
+			for (auto tick : time_slots)
+				tot_valid_demand += s_demand[tick];
+			cerr << "server " << s << " tot_valid_demand = " << tot_valid_demand << "  deg = " << deg[s] << endl;
+			int util = 0;
 			for (auto tick : time_slots) {
 				vector <server_record> rs;
-				for (int c = 0; c < m; c++) if (qos[c][s]) {
+				for (int c = 0; c < m; c++) if (qos[s][c]) {
 					for (auto i : unsatisfied[tick][c]) {
 						rs.push_back(i);
 					}
@@ -364,17 +376,22 @@ struct Solver {
 						flow -= i.flow;
 					}
 				}
+				util += bandwidth[s] - flow;
 			}
+			cerr << "util = " << util << endl;
 		}
 		cerr << "burst complete" << endl; 
 		vector < pair <server_record, int> > all_unsatisfied;
+		int tot_flow = 0;
 		for (int tick = 0; tick < t; tick ++) {
 			for (int c = 0; c < m; c++) {
 				for (auto i : unsatisfied[tick][c]) {
 					all_unsatisfied.push_back({i, tick});
+					tot_flow += i.flow;
 				}
 			}
 		}
+		cerr << "tot_flow = " << tot_flow << endl;
 		cerr << "all = " << all_unsatisfied.size() << endl;
 		sort(all_unsatisfied.begin(), all_unsatisfied.end());
 		
@@ -405,12 +422,13 @@ struct Solver {
 			if (cnt++ % 10000 == 0) cerr << "cnt = " << cnt << endl;
 			vector < pair <pair <double, int>, int> > candidate;
 			for (int s = 0; s < n; s++) {
-				if (server_used[s][tick] + i.flow <= bandwidth[s]) {
+				if (qos[s][i.customer] && server_used[s][tick] + i.flow <= bandwidth[s]) {
 					auto inc = calc_diff_cost(tick, s, i.flow);
-					candidate.push_back({{inc, server_used[s][tick] - bandwidth[s]}, s});
+					candidate.push_back({{inc, server_used[s][tick] - server_flow[s].flow95()}, s});
 				}
 			}
 			assert (candidate.size() > 0);
+			auto min_ele = min_element(candidate.begin(), candidate.end());
 			allocate_stage2(tick, min_element(candidate.begin(), candidate.end())->second, i);
 		}
 		ans.calc();
@@ -453,6 +471,5 @@ int main() {
 	
 	worker[0].ans.output();
 }
-
 
 
